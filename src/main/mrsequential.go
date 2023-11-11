@@ -14,7 +14,7 @@ import "log"
 import "io/ioutil"
 import "sort"
 
-// for sorting by key.
+// for sorting by key.  type关键字创建别名
 type ByKey []mr.KeyValue
 
 // for sorting by key.
@@ -29,7 +29,7 @@ func main() {
 	}
 
 	mapf, reducef := loadPlugin(os.Args[1])
-
+	
 	//
 	// read each input file,
 	// pass it to Map,

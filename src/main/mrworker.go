@@ -23,8 +23,10 @@ func main() {
 	}
 
 	mapf, reducef := loadPlugin(os.Args[1])
-
+	
+	// mr.CallExample()
 	mr.Worker(mapf, reducef)
+
 }
 
 // load the application Map and Reduce functions
