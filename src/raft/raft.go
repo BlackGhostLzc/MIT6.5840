@@ -115,7 +115,7 @@ func (rf *Raft) switchTo(newState int) {
 // 为了避免同时多个 raft 实例选举超时，这个时间需要随机
 func (rf *Raft) resetElectionTimer() {
 	// 选举超时要稍大于心跳超时
-	rf.electionTimeout = rf.heartbeatPeriod + rand.Intn(150)
+	rf.electionTimeout = 2*rf.heartbeatPeriod + rand.Intn(150)
 	rf.latestHeardTime = time.Now().UnixNano()
 }
 
@@ -449,6 +449,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.CurrentTerm
 }
 
+// 别忘了重置 electiontimeout 计时器
 func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 	// TODO
 	rf.mu.Lock()
@@ -464,6 +465,8 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 
 		reply.Term = rf.CurrentTerm
 		reply.Success = true
+		rf.resetElectionTimer()
+
 	} else {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
@@ -526,7 +529,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 	return index, term, isLeader
 }
 
