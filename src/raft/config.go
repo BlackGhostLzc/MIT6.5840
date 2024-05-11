@@ -140,6 +140,7 @@ func (cfg *config) crash1(i int) {
 func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	err_msg := ""
 	v := m.Command
+	// fmt.Printf("v / m.command is %v\n\n\n\n", v)
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
 			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
@@ -582,6 +583,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
 				if nd > 0 && nd >= expectedServers {
+					// fmt.Printf("cmd1 is %v....cmd is %v\n\n", cmd1, cmd)
 					// committed
 					if cmd1 == cmd {
 						// and it was the command we submitted.

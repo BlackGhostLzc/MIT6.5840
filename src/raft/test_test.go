@@ -109,6 +109,8 @@ func TestManyElections2A(t *testing.T) {
 		cfg.disconnect(i2)
 		cfg.disconnect(i3)
 
+		// fmt.Printf("%d, %d, %d\n", i1, i2, i3)
+
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
 		cfg.checkOneLeader()
@@ -131,6 +133,8 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.begin("Test (2B): basic agreement")
 
 	iters := 3
+	// 日志索引是从 1 开始的吗，0 号索引是什么 (raft.Logs刚创建的时候会append一条空日志)
+	// 我们不考虑一个 leader 选举出来会发送一条 nop 日志的实现思路(尽快达成共识)，因为这一接口是 Start 方法
 	for index := 1; index < iters+1; index++ {
 		nd, _ := cfg.nCommitted(index)
 		if nd > 0 {
