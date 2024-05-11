@@ -217,22 +217,18 @@ func (rf *Raft) applyEntries() {
 		rf.mu.Lock()
 		lastApplied := rf.lastApplied
 		commitIndex := rf.commitIndex
-		rf.mu.Unlock()
 
 		// 这里是安全的，并不需要进行加锁
 		for i := lastApplied + 1; i <= commitIndex; i++ {
-			rf.mu.Lock()
 			rf.lastApplied = i
-			rf.mu.Unlock()
 
-			DPrintf("server %d commit log %s\n\n", rf.me, rf.Log[i].Command)
+			// fmt.Printf("server %d commit log %s index is %d\n", rf.me, rf.Log[i].Command, i)
 
 			// 记住了，这里是 append rf.Log[i].Command !!!
 			appMsg := ApplyMsg{CommandValid: true, Command: rf.Log[i].Command, CommandIndex: i}
 			rf.applyCh <- appMsg
 		}
 
-		rf.mu.Lock()
 		rf.applyEntriesCond.Wait()
 		rf.mu.Unlock()
 	}
@@ -295,6 +291,7 @@ func (rf *Raft) startElection() {
 					*nVotes = *nVotes + 1
 					// // 这里必须加上判断 rf.state == Candidate,(防止多次进入该函数)
 					if *nVotes >= len(rf.peers)/2+1 && rf.state == Candidate {
+						// fmt.Printf("%d 获得的票数为 %d, 任期号为 %d\n", rf.me, *nVotes, rf.CurrentTerm)
 						rf.switchTo(Leader) // 都加锁进行保护了
 						rf.leaderId = rf.me
 
@@ -303,7 +300,8 @@ func (rf *Raft) startElection() {
 							rf.matchIndex[j] = 0
 						}
 
-						DPrintf("%d win the election, term is %d\n", rf.me, rf.CurrentTerm)
+						// DPrintf("%d win the election, term is %d\n", rf.me, rf.CurrentTerm)
+						// fmt.Printf("%d win the election, term is %d\n", rf.me, rf.CurrentTerm)
 
 						// 发送一次心跳，(在broadcastHeartbeat中还需要进行上锁)
 						go rf.broadcastHeartbeat()
@@ -379,6 +377,7 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 				return
 			}
 
+			// 不应该处理上个任期的 AppendEntriesRPC
 			rf.mu.Lock()
 			if rf.CurrentTerm != term {
 				rf.mu.Unlock()
@@ -405,6 +404,7 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 			args := AppendEntryArgs{Term: term, LeaderId: rf.me, PrevLogIndex: prevLogIndex,
 				PrevLogTerm: prevLogTerm, Entries: entries, LeaderCommit: commitIndex}
 			reply := AppendEntryReply{}
+			reply.Success = false
 
 			// 为什么这两行代码调换一下位置就不行 ????
 			rf.mu.Unlock()
@@ -427,20 +427,29 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 				// 发送 appendentry 成功被 server 接收
 				if reply.Success == true {
 					rf.mu.Lock()
+
+					if rf.CurrentTerm != args.Term {
+						rf.mu.Unlock()
+						return
+					}
+
 					nAgree++
 
 					// 如果(没有传输任何命令)，我们不能写入 ApplyCh
-					if isAgree == false && nAgree >= len(rf.peers)/2+1 {
+					// 这里必须要加上判断 rf.state == Leader !!!
+					if isAgree == false && nAgree >= len(rf.peers)/2+1 && rf.state == Leader {
 						// 更新 commitIndex, 并向其他节点发送心跳接受新的 commitIndex
 						isAgree = true
 
+						// fmt.Printf("得票：%d, 总机器数:%d\n", nAgree, len(rf.peers))
+
 						// 这个条件说明这条 AppendEntry 中有内容
 						if rf.commitIndex < index && rf.Log[index].Term == rf.CurrentTerm {
-
-							DPrintf("index committed\n\n\n")
-
+							// 想一下这段逻辑的一些问题。假设一个 leader 连续两次 Start(cmd)
+							// 假设第二个 Start 的 go broadcastAppendEntries() 先达成一致，第一个还没有达成一致
+							// 这样的话会更新 rf.commitIndex 为第二次调用 Start 时的 index，
+							// 进而唤醒了 applyEntries 协程，出现了错误！！！
 							rf.commitIndex = index
-
 							// 不应该在这里放入 rf.applyMsg 中，这段逻辑应该在相应的协程中才会执行
 							// applyMsg := ApplyMsg{CommandValid: true, Command: rf.Log[index], CommandIndex: index}
 							// rf.applyCh <- applyMsg
@@ -469,7 +478,7 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 						rf.switchTo(Follower)
 						rf.CurrentTerm = reply.Term
 						rf.VoteFor = -1
-						// 谁告诉你这里要设置 leaderId 啦！！
+						// 谁告诉你这里要设置 leaderId 啦！！等到发送心跳才会知道
 						// rf.leaderId = i
 						rf.mu.Unlock()
 						return
@@ -582,6 +591,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	reply.VoteGranted = false
+
 	if rf.CurrentTerm <= args.Term {
 		// 这种情况直接投票给 Candidate
 		if rf.CurrentTerm < args.Term {
@@ -590,9 +601,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.CurrentTerm = args.Term
 			rf.VoteFor = -1
 
-			reply.Term = rf.CurrentTerm
-			reply.VoteGranted = true
-			return
+			// 这里不能投票给Candidate !!! 还没有判断日志呢！！！！
+			// reply.VoteGranted = true
+			// 修改后顺利通过 Test (2B): rejoin of partitioned leader
 		}
 
 		reply.Term = rf.CurrentTerm
@@ -603,6 +614,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			// 拒绝投票的条件：
 			// 1.  Server.term > Candidate.term
 			// 2. (Server.term == Candidate.term) && (Server.lastindex > Candidate.lastindex)
+			// fmt.Printf("Candidate info: lastLogTerm:%d, lastLogIndex:%d\n",
+			//	args.LastLogTerm, args.LastLogIndex)
+			// fmt.Printf("Server info: lastLogTerm:%d, lastLogIndex:%d\n\n",
+			// rf.Log[len(rf.Log)-1].Term, len(rf.Log)-1)
+
 			if rf.Log[len(rf.Log)-1].Term > args.LastLogTerm {
 				// 拒绝投票
 				reply.VoteGranted = false
@@ -615,7 +631,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				}
 			}
 
+			rf.resetElectionTimer()
 			rf.VoteFor = args.CandidateId
+			// fmt.Printf("%d 在任期 %d 投票给了 %d\n\n\n\n\n", rf.me, rf.CurrentTerm, args.CandidateId)
 			rf.switchTo(Follower)
 			reply.VoteGranted = true
 			return
@@ -633,7 +651,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 */
 
 func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
-	// TODO
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -647,38 +664,41 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 
 		// 有没有可能现在 rf 也是 Candidate 状态
 		rf.switchTo(Follower)
+		// 这里必须加上 LeaderId 的设置
+		rf.leaderId = args.LeaderId
 		reply.Term = rf.CurrentTerm
+
 		rf.resetElectionTimer()
 
 		// 这种情况下需要接受 Leader 发过来的 entries, 首先进行一致性检查
 		if len(rf.Log)-1 < args.PrevLogIndex {
-			// 这说明 server 都没有 prevlog 这条日志，一致性检查失败
-			DPrintf("Error in lab2A!!! [len of rf logs %d, args PrevLogIndex %d]", len(rf.Log), args.PrevLogIndex)
 			reply.Success = false
 			return
 		}
 		// 有这条日志记录
 		if rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
-			DPrintf("Error in lab2A!!! [prevLogIndex is %d, rf Term %d, args term %d]",
-				args.PrevLogIndex, rf.Log[args.PrevLogIndex].Term, args.PrevLogTerm)
 			reply.Success = false
 			return
 		}
 
 		// 一致性检查成功，改写日志
 		if len(args.Entries) > 0 {
-			DPrintf("server %d append new entries %s\n", rf.me, args.Entries[0].Command)
 			entries := make([]LogEntry, len(args.Entries))
 			copy(entries, args.Entries)
 			// 不包括 PrevLogIndex + 1 处的元素
 			rf.Log = append(rf.Log[:args.PrevLogIndex+1], entries...) // [0, nextIndex) + entries
+
+			// 打印一下当前的 logs
+			// fmt.Printf("server %d, after consistency check %v\n", rf.me, rf.Log)
 		}
 
 		reply.Success = true
 
 		// 如何更新 commitIndex 呢
 		// 1.首先，commitIndex 不能大于 len(rf.Log)
+		// prevLogIndex [entries]
 		indexOfLastOfNewEntry := args.PrevLogIndex + len(args.Entries)
+
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = args.LeaderCommit
 			if rf.commitIndex > indexOfLastOfNewEntry {
@@ -688,7 +708,6 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 			// 更新了commitIndex之后给applyCond条件变量发信号，以应用新提交的entries到状态机
 			rf.applyEntriesCond.Broadcast()
 		}
-
 	} else {
 		// 告诉你我才是老大(Leader)
 		reply.Term = rf.CurrentTerm
@@ -768,7 +787,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 		DPrintf("Leader %d attempt vote for a new entry[%s] index[%d]\n", rf.me, command, index)
 
-		go rf.broadcastAppendEntries(index, rf.CurrentTerm, rf.commitIndex, agreeNum)
+		go rf.broadcastAppendEntries(index, rf.CurrentTerm, agreeNum, rf.commitIndex)
 
 		rf.mu.Unlock()
 	}
