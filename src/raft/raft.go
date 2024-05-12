@@ -130,7 +130,7 @@ func (rf *Raft) switchTo(newState int) {
 // 为了避免同时多个 raft 实例选举超时，这个时间需要随机
 func (rf *Raft) resetElectionTimer() {
 	// 选举超时要稍大于心跳超时
-	rf.electionTimeout = 4*rf.heartbeatPeriod + rand.Intn(200)
+	rf.electionTimeout = 5*rf.heartbeatPeriod + rand.Intn(200)
 	rf.latestHeardTime = time.Now().UnixNano()
 }
 
@@ -226,6 +226,8 @@ func (rf *Raft) applyEntries() {
 
 			// 记住了，这里是 append rf.Log[i].Command !!!
 			appMsg := ApplyMsg{CommandValid: true, Command: rf.Log[i].Command, CommandIndex: i}
+			// fmt.Printf("server %d commit log %s index is %d\n logs is %v\n", rf.me, rf.Log[i].Command, i, rf.Log)
+
 			rf.applyCh <- appMsg
 		}
 
@@ -368,16 +370,13 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 		go func(i int, rf *Raft) {
 			defer wg.Done()
 
-			rf.mu.Lock()
-			nextIndex := rf.nextIndex[i]
-			rf.mu.Unlock()
-
 		retry:
 			if _, isLeader := rf.GetState(); isLeader == false {
 				return
 			}
 
 			// 不应该处理上个任期的 AppendEntriesRPC
+			// 在提交的限制中，Leader不能够提交不是当前任期内的日志,只能通过提交当前任期的日志顺带也把之前未提交的日志给提交了
 			rf.mu.Lock()
 			if rf.CurrentTerm != term {
 				rf.mu.Unlock()
@@ -386,6 +385,7 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 			rf.mu.Unlock()
 
 			rf.mu.Lock()
+			nextIndex := rf.nextIndex[i]
 			prevLogIndex := nextIndex - 1
 			entries := make([]LogEntry, 0)
 
@@ -406,7 +406,7 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 			reply := AppendEntryReply{}
 			reply.Success = false
 
-			// 为什么这两行代码调换一下位置就不行 ????
+			// 为什么这两行代码调换一下位置就不行 ???? 答案是不行 !!!
 			rf.mu.Unlock()
 			// 这应该是一个长调用(时间开销大),如果调换了位置获取锁的时间就会很长
 			ok := rf.sendAppendEntries(i, &args, &reply)
@@ -433,6 +433,13 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 						return
 					}
 
+					// 还需要更新 nextIndex[i]
+					// 如果 nextIndex[i] == index + 1: 则证明 server i 并不缺少日志
+					if rf.nextIndex[i] < index+1 {
+						rf.nextIndex[i] = index + 1
+						rf.matchIndex[i] = index
+					}
+
 					nAgree++
 
 					// 如果(没有传输任何命令)，我们不能写入 ApplyCh
@@ -449,11 +456,12 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 							// 假设第二个 Start 的 go broadcastAppendEntries() 先达成一致，第一个还没有达成一致
 							// 这样的话会更新 rf.commitIndex 为第二次调用 Start 时的 index，
 							// 进而唤醒了 applyEntries 协程，出现了错误！！！
+							// 不会的！会进行一致性检查
 							rf.commitIndex = index
+
 							// 不应该在这里放入 rf.applyMsg 中，这段逻辑应该在相应的协程中才会执行
 							// applyMsg := ApplyMsg{CommandValid: true, Command: rf.Log[index], CommandIndex: index}
 							// rf.applyCh <- applyMsg
-
 							rf.applyEntriesCond.Broadcast()
 
 							// 有了更新的 commitIndex, 需要告诉所有的 server
@@ -462,14 +470,8 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 
 					}
 
-					// 还需要更新 nextIndex[i]
-					// 如果 nextIndex[i] == index + 1: 则证明 server i 并不缺少日志
-					if rf.nextIndex[i] < index+1 {
-						rf.nextIndex[i] = index + 1
-						rf.matchIndex[i] = index
-					}
-
 					rf.mu.Unlock()
+					return
 
 				} else {
 					// 有可能 server 的 term 更大，此时该 Leader 需要切换为 Follower
@@ -487,11 +489,10 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 
 					// 一致性检查失败，需要重试
 					DPrintf("Leader %d to server %d 一致性检查失败，需要重试:\n", rf.me, i)
-					nextIndex--
 
 					rf.mu.Lock()
 					// 下次当选时能够避免从 len(rf.Log)处开始进行一致性检查
-					rf.nextIndex[i] = nextIndex
+					rf.nextIndex[i] = nextIndex - 1
 					rf.mu.Unlock()
 
 					goto retry
@@ -657,6 +658,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 	if rf.CurrentTerm <= args.Term {
 		if rf.CurrentTerm < args.Term {
 			rf.switchTo(Follower)
+
 			rf.VoteFor = -1
 			rf.CurrentTerm = args.Term
 			rf.leaderId = args.LeaderId
@@ -681,22 +683,46 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 			return
 		}
 
-		// 一致性检查成功，改写日志
-		if len(args.Entries) > 0 {
+		rf.switchTo(Follower)
+
+		// 一致性检查成功，改写日志,
+		// 也不一定哦 ！！！
+		// 这样直接改日志可能让日志长度变短了(连续两个AppendEntries, 后一个更新的 AppendEntries 先被处理，会被覆盖掉)
+		// 这样仍然更新了 rf.CommitIndex,会出现 index out of range 的错误
+
+		// 这里的判断非常重要，不能截断正确的日志
+		// 想一下， leader 发送过来的日志肯定都是安全的，可以 append 的
+		// 1. 如果 entries 中的日志和 rf.Log中的完全一致匹配，那么就不需要进行覆盖写，覆盖写反而会出错
+		tmpId := args.PrevLogIndex + 1
+		entriesId := 0
+		needAppend := false
+		for ; entriesId < len(args.Entries); entriesId++ {
+			if tmpId == len(rf.Log) {
+				needAppend = true
+				break
+			}
+			if rf.Log[tmpId].Term != args.Entries[entriesId].Term {
+				needAppend = true
+				break
+			}
+			tmpId++
+		}
+
+		if len(args.Entries) > 0 && needAppend {
 			entries := make([]LogEntry, len(args.Entries))
 			copy(entries, args.Entries)
 			// 不包括 PrevLogIndex + 1 处的元素
-			rf.Log = append(rf.Log[:args.PrevLogIndex+1], entries...) // [0, nextIndex) + entries
-
+			// rf.Log = append(rf.Log[:args.PrevLogIndex+1], entries...) // [0, nextIndex) + entries
+			rf.Log = rf.Log[:args.PrevLogIndex+1]
+			rf.Log = append(rf.Log, entries...)
 			// 打印一下当前的 logs
 			// fmt.Printf("server %d, after consistency check %v\n", rf.me, rf.Log)
 		}
 
-		reply.Success = true
-
 		// 如何更新 commitIndex 呢
 		// 1.首先，commitIndex 不能大于 len(rf.Log)
 		// prevLogIndex [entries]
+
 		indexOfLastOfNewEntry := args.PrevLogIndex + len(args.Entries)
 
 		if args.LeaderCommit > rf.commitIndex {
@@ -708,6 +734,15 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 			// 更新了commitIndex之后给applyCond条件变量发信号，以应用新提交的entries到状态机
 			rf.applyEntriesCond.Broadcast()
 		}
+
+		//fmt.Printf("server %d 现在的日志是 %v, 长度为 %d, 应该提交的commitIndex为 %d\n", rf.me, rf.Log, len(rf.Log), rf.commitIndex)
+
+		rf.resetElectionTimer()
+		reply.Term = rf.CurrentTerm
+		reply.Success = true
+		rf.leaderId = args.LeaderId
+		return
+
 	} else {
 		// 告诉你我才是老大(Leader)
 		reply.Term = rf.CurrentTerm

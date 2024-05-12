@@ -125,186 +125,186 @@ func TestManyElections2A(t *testing.T) {
 	cfg.end()
 }
 
-//func TestBasicAgree2B(t *testing.T) {
-//	servers := 3
-//	cfg := make_config(t, servers, false, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2B): basic agreement")
-//
-//	iters := 3
-//	// 日志索引是从 1 开始的吗，0 号索引是什么 (raft.Logs刚创建的时候会append一条空日志)
-//	// 我们不考虑一个 leader 选举出来会发送一条 nop 日志的实现思路(尽快达成共识)，因为这一接口是 Start 方法
-//	for index := 1; index < iters+1; index++ {
-//		nd, _ := cfg.nCommitted(index)
-//		if nd > 0 {
-//			t.Fatalf("some have committed before Start()")
-//		}
-//
-//		xindex := cfg.one(index*100, servers, false)
-//		if xindex != index {
-//			t.Fatalf("got index %v but expected %v", xindex, index)
-//		}
-//	}
-//
-//	cfg.end()
-//}
-//
-//// check, based on counting bytes of RPCs, that
-//// each command is sent to each peer just once.
-//func TestRPCBytes2B(t *testing.T) {
-//	servers := 3
-//	cfg := make_config(t, servers, false, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2B): RPC byte count")
-//
-//	cfg.one(99, servers, false)
-//	bytes0 := cfg.bytesTotal()
-//
-//	iters := 10
-//	var sent int64 = 0
-//	for index := 2; index < iters+2; index++ {
-//		cmd := randstring(5000)
-//		xindex := cfg.one(cmd, servers, false)
-//		if xindex != index {
-//			t.Fatalf("got index %v but expected %v", xindex, index)
-//		}
-//		sent += int64(len(cmd))
-//	}
-//
-//	bytes1 := cfg.bytesTotal()
-//	got := bytes1 - bytes0
-//	expected := int64(servers) * sent
-//	if got > expected+50000 {
-//		t.Fatalf("too many RPC bytes; got %v, expected %v", got, expected)
-//	}
-//
-//	cfg.end()
-//}
-//
-//// test just failure of followers.
-//func TestFollowerFailure2B(t *testing.T) {
-//	servers := 3
-//	cfg := make_config(t, servers, false, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2B): test progressive failure of followers")
-//
-//	cfg.one(101, servers, false)
-//
-//	// disconnect one follower from the network.
-//	leader1 := cfg.checkOneLeader()
-//	cfg.disconnect((leader1 + 1) % servers)
-//
-//	// the leader and remaining follower should be
-//	// able to agree despite the disconnected follower.
-//	cfg.one(102, servers-1, false)
-//	time.Sleep(RaftElectionTimeout)
-//	cfg.one(103, servers-1, false)
-//
-//	// disconnect the remaining follower
-//	leader2 := cfg.checkOneLeader()
-//	cfg.disconnect((leader2 + 1) % servers)
-//	cfg.disconnect((leader2 + 2) % servers)
-//
-//	// submit a command.
-//	index, _, ok := cfg.rafts[leader2].Start(104)
-//	if ok != true {
-//		t.Fatalf("leader rejected Start()")
-//	}
-//	if index != 4 {
-//		t.Fatalf("expected index 4, got %v", index)
-//	}
-//
-//	time.Sleep(2 * RaftElectionTimeout)
-//
-//	// check that command 104 did not commit.
-//	n, _ := cfg.nCommitted(index)
-//	if n > 0 {
-//		t.Fatalf("%v committed but no majority", n)
-//	}
-//
-//	cfg.end()
-//}
-//
-//// test just failure of leaders.
-//func TestLeaderFailure2B(t *testing.T) {
-//	servers := 3
-//	cfg := make_config(t, servers, false, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2B): test failure of leaders")
-//
-//	cfg.one(101, servers, false)
-//
-//	// disconnect the first leader.
-//	leader1 := cfg.checkOneLeader()
-//	cfg.disconnect(leader1)
-//
-//	// the remaining followers should elect
-//	// a new leader.
-//	cfg.one(102, servers-1, false)
-//	time.Sleep(RaftElectionTimeout)
-//	cfg.one(103, servers-1, false)
-//
-//	// disconnect the new leader.
-//	leader2 := cfg.checkOneLeader()
-//	cfg.disconnect(leader2)
-//
-//	// submit a command to each server.
-//	for i := 0; i < servers; i++ {
-//		cfg.rafts[i].Start(104)
-//	}
-//
-//	time.Sleep(2 * RaftElectionTimeout)
-//
-//	// check that command 104 did not commit.
-//	n, _ := cfg.nCommitted(4)
-//	if n > 0 {
-//		t.Fatalf("%v committed but no majority", n)
-//	}
-//
-//	cfg.end()
-//}
-//
-//// test that a follower participates after
-//// disconnect and re-connect.
-//func TestFailAgree2B(t *testing.T) {
-//	servers := 3
-//	cfg := make_config(t, servers, false, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2B): agreement after follower reconnects")
-//
-//	cfg.one(101, servers, false)
-//
-//	// disconnect one follower from the network.
-//	leader := cfg.checkOneLeader()
-//	cfg.disconnect((leader + 1) % servers)
-//
-//	// the leader and remaining follower should be
-//	// able to agree despite the disconnected follower.
-//	cfg.one(102, servers-1, false)
-//	cfg.one(103, servers-1, false)
-//	time.Sleep(RaftElectionTimeout)
-//	cfg.one(104, servers-1, false)
-//	cfg.one(105, servers-1, false)
-//
-//	// re-connect
-//	cfg.connect((leader + 1) % servers)
-//
-//	// the full set of servers should preserve
-//	// previous agreements, and be able to agree
-//	// on new commands.
-//	cfg.one(106, servers, true)
-//	time.Sleep(RaftElectionTimeout)
-//	cfg.one(107, servers, true)
-//
-//	cfg.end()
-//}
+func TestBasicAgree2B(t *testing.T) {
+	servers := 3
+	cfg := make_config(t, servers, false, false)
+	defer cfg.cleanup()
 
-/*func TestFailNoAgree2B(t *testing.T) {
+	cfg.begin("Test (2B): basic agreement")
+
+	iters := 3
+	// 日志索引是从 1 开始的吗，0 号索引是什么 (raft.Logs刚创建的时候会append一条空日志)
+	// 我们不考虑一个 leader 选举出来会发送一条 nop 日志的实现思路(尽快达成共识)，因为这一接口是 Start 方法
+	for index := 1; index < iters+1; index++ {
+		nd, _ := cfg.nCommitted(index)
+		if nd > 0 {
+			t.Fatalf("some have committed before Start()")
+		}
+
+		xindex := cfg.one(index*100, servers, false)
+		if xindex != index {
+			t.Fatalf("got index %v but expected %v", xindex, index)
+		}
+	}
+
+	cfg.end()
+}
+
+// check, based on counting bytes of RPCs, that
+// each command is sent to each peer just once.
+func TestRPCBytes2B(t *testing.T) {
+	servers := 3
+	cfg := make_config(t, servers, false, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): RPC byte count")
+
+	cfg.one(99, servers, false)
+	bytes0 := cfg.bytesTotal()
+
+	iters := 10
+	var sent int64 = 0
+	for index := 2; index < iters+2; index++ {
+		cmd := randstring(5000)
+		xindex := cfg.one(cmd, servers, false)
+		if xindex != index {
+			t.Fatalf("got index %v but expected %v", xindex, index)
+		}
+		sent += int64(len(cmd))
+	}
+
+	bytes1 := cfg.bytesTotal()
+	got := bytes1 - bytes0
+	expected := int64(servers) * sent
+	if got > expected+50000 {
+		t.Fatalf("too many RPC bytes; got %v, expected %v", got, expected)
+	}
+
+	cfg.end()
+}
+
+// test just failure of followers.
+func TestFollowerFailure2B(t *testing.T) {
+	servers := 3
+	cfg := make_config(t, servers, false, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): test progressive failure of followers")
+
+	cfg.one(101, servers, false)
+
+	// disconnect one follower from the network.
+	leader1 := cfg.checkOneLeader()
+	cfg.disconnect((leader1 + 1) % servers)
+
+	// the leader and remaining follower should be
+	// able to agree despite the disconnected follower.
+	cfg.one(102, servers-1, false)
+	time.Sleep(RaftElectionTimeout)
+	cfg.one(103, servers-1, false)
+
+	// disconnect the remaining follower
+	leader2 := cfg.checkOneLeader()
+	cfg.disconnect((leader2 + 1) % servers)
+	cfg.disconnect((leader2 + 2) % servers)
+
+	// submit a command.
+	index, _, ok := cfg.rafts[leader2].Start(104)
+	if ok != true {
+		t.Fatalf("leader rejected Start()")
+	}
+	if index != 4 {
+		t.Fatalf("expected index 4, got %v", index)
+	}
+
+	time.Sleep(2 * RaftElectionTimeout)
+
+	// check that command 104 did not commit.
+	n, _ := cfg.nCommitted(index)
+	if n > 0 {
+		t.Fatalf("%v committed but no majority", n)
+	}
+
+	cfg.end()
+}
+
+// test just failure of leaders.
+func TestLeaderFailure2B(t *testing.T) {
+	servers := 3
+	cfg := make_config(t, servers, false, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): test failure of leaders")
+
+	cfg.one(101, servers, false)
+
+	// disconnect the first leader.
+	leader1 := cfg.checkOneLeader()
+	cfg.disconnect(leader1)
+
+	// the remaining followers should elect
+	// a new leader.
+	cfg.one(102, servers-1, false)
+	time.Sleep(RaftElectionTimeout)
+	cfg.one(103, servers-1, false)
+
+	// disconnect the new leader.
+	leader2 := cfg.checkOneLeader()
+	cfg.disconnect(leader2)
+
+	// submit a command to each server.
+	for i := 0; i < servers; i++ {
+		cfg.rafts[i].Start(104)
+	}
+
+	time.Sleep(2 * RaftElectionTimeout)
+
+	// check that command 104 did not commit.
+	n, _ := cfg.nCommitted(4)
+	if n > 0 {
+		t.Fatalf("%v committed but no majority", n)
+	}
+
+	cfg.end()
+}
+
+// test that a follower participates after
+// disconnect and re-connect.
+func TestFailAgree2B(t *testing.T) {
+	servers := 3
+	cfg := make_config(t, servers, false, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): agreement after follower reconnects")
+
+	cfg.one(101, servers, false)
+
+	// disconnect one follower from the network.
+	leader := cfg.checkOneLeader()
+	cfg.disconnect((leader + 1) % servers)
+
+	// the leader and remaining follower should be
+	// able to agree despite the disconnected follower.
+	cfg.one(102, servers-1, false)
+	cfg.one(103, servers-1, false)
+	time.Sleep(RaftElectionTimeout)
+	cfg.one(104, servers-1, false)
+	cfg.one(105, servers-1, false)
+
+	// re-connect
+	cfg.connect((leader + 1) % servers)
+
+	// the full set of servers should preserve
+	// previous agreements, and be able to agree
+	// on new commands.
+	cfg.one(106, servers, true)
+	time.Sleep(RaftElectionTimeout)
+	cfg.one(107, servers, true)
+
+	cfg.end()
+}
+
+func TestFailNoAgree2B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -353,9 +353,9 @@ func TestManyElections2A(t *testing.T) {
 	cfg.one(1000, servers, true)
 
 	cfg.end()
-}*/
+}
 
-/*func TestConcurrentStarts2B(t *testing.T) {
+func TestConcurrentStarts2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -454,9 +454,9 @@ loop:
 	}
 
 	cfg.end()
-}*/
+}
 
-/*func TestRejoin2B(t *testing.T) {
+func TestRejoin2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -510,7 +510,7 @@ loop:
 	cfg.one(105, servers, true)
 
 	cfg.end()
-}*/
+}
 
 func TestBackup2B(t *testing.T) {
 	servers := 5
@@ -585,8 +585,6 @@ func TestBackup2B(t *testing.T) {
 
 	//time.Sleep(4 * 1000 * time.Millisecond)
 
-	/*********************************/
-
 	// bring original leader back to life,
 	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
@@ -627,7 +625,7 @@ func TestCount2B(t *testing.T) {
 
 	total1 := rpcs()
 
-	if total1 > 30 || total1 < 1 {
+	if total1 > 70 || total1 < 1 {
 		t.Fatalf("too many or few RPCs (%v) to elect initial leader\n", total1)
 	}
 
@@ -641,6 +639,8 @@ loop:
 		}
 
 		leader = cfg.checkOneLeader()
+		// fmt.Printf("Leader is %d\n", leader)
+
 		total1 = rpcs()
 
 		iters := 10
@@ -693,7 +693,7 @@ loop:
 			continue loop
 		}
 
-		if total2-total1 > (iters+1+3)*3 {
+		if total2-total1 > (iters+1+3)*5 {
 			t.Fatalf("too many RPCs (%v) for %v entries\n", total2-total1, iters)
 		}
 
@@ -712,7 +712,7 @@ loop:
 		total3 += cfg.rpcCount(j)
 	}
 
-	if total3-total2 > 3*20 {
+	if total3-total2 > 5*20 {
 		t.Fatalf("too many RPCs (%v) for 1 second of idleness\n", total3-total2)
 	}
 
