@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"6.5840/labgob"
+	"bytes"
 	"fmt"
 	//	"bytes"
 	"math/rand"
@@ -247,6 +249,8 @@ func (rf *Raft) startElection() {
 	nVotes := 1
 	rf.resetElectionTimer()
 
+	rf.persist()
+
 	rf.mu.Unlock()
 
 	// 启动一个协程完成这个投票的整个任务
@@ -318,6 +322,9 @@ func (rf *Raft) startElection() {
 						rf.VoteFor = -1
 						rf.CurrentTerm = reply.Term
 						rf.switchTo(Follower)
+
+						rf.persist()
+
 					}
 					rf.mu.Unlock()
 				}
@@ -482,6 +489,9 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 						rf.VoteFor = -1
 						// 谁告诉你这里要设置 leaderId 啦！！等到发送心跳才会知道
 						// rf.leaderId = i
+
+						rf.persist()
+
 						rf.mu.Unlock()
 						return
 					}
@@ -510,6 +520,8 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 // second argument to persister.Save().
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
+// 论文中有提到 哪些字段需要进行持久化
+
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
@@ -519,6 +531,16 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	// 调用之前必须 已经持有 rf.mu 这把锁
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VoteFor)
+	e.Encode(rf.Log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
+
 }
 
 // restore previously persisted state.
@@ -539,6 +561,20 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	// 这里传入的是 raftstate[] bytes
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var currentTerm int
+	var voteFor int
+	var logs []LogEntry
+	if d.Decode(&currentTerm) == nil && d.Decode(&voteFor) == nil && d.Decode(&logs) == nil {
+		rf.CurrentTerm = currentTerm
+		rf.VoteFor = voteFor
+		rf.Log = logs
+	}
+
 }
 
 // the service says it has created a snapshot that has
@@ -605,6 +641,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			// 这里不能投票给Candidate !!! 还没有判断日志呢！！！！
 			// reply.VoteGranted = true
 			// 修改后顺利通过 Test (2B): rejoin of partitioned leader
+			rf.persist()
 		}
 
 		reply.Term = rf.CurrentTerm
@@ -637,8 +674,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			// fmt.Printf("%d 在任期 %d 投票给了 %d\n\n\n\n\n", rf.me, rf.CurrentTerm, args.CandidateId)
 			rf.switchTo(Follower)
 			reply.VoteGranted = true
+
+			rf.persist()
+
 			return
 		}
+
 	}
 
 	reply.Term = rf.CurrentTerm
@@ -662,6 +703,8 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 			rf.VoteFor = -1
 			rf.CurrentTerm = args.Term
 			rf.leaderId = args.LeaderId
+
+			rf.persist()
 		}
 
 		// 有没有可能现在 rf 也是 Candidate 状态
@@ -717,6 +760,7 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 			rf.Log = append(rf.Log, entries...)
 			// 打印一下当前的 logs
 			// fmt.Printf("server %d, after consistency check %v\n", rf.me, rf.Log)
+			rf.persist()
 		}
 
 		// 如何更新 commitIndex 呢
@@ -741,6 +785,9 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		reply.Term = rf.CurrentTerm
 		reply.Success = true
 		rf.leaderId = args.LeaderId
+
+		// rf.persist()
+
 		return
 
 	} else {
@@ -819,6 +866,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		index = len(rf.Log) - 1 // 这是需要进行共识Log的下标
 		agreeNum := 1           // 获得同意的数目
 		rf.latestIssueTime = time.Now().UnixNano()
+
+		rf.persist()
 
 		DPrintf("Leader %d attempt vote for a new entry[%s] index[%d]\n", rf.me, command, index)
 
@@ -927,10 +976,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// go rf.debug()
 
+	rf.mu.Lock()
+	rf.readPersist(persister.ReadRaftState())
+	rf.mu.Unlock()
+
+	rf.mu.Lock()
+	rf.persist()
+	rf.mu.Unlock()
+
 	go rf.eventLoop()
 
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	// go rf.ticker()

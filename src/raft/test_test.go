@@ -729,6 +729,7 @@ func TestPersist12C(t *testing.T) {
 	cfg.one(11, servers, true)
 
 	// crash and re-start all
+	// 这行代码需要我们 persist 一些信息
 	for i := 0; i < servers; i++ {
 		cfg.start1(i, cfg.applier)
 	}
@@ -849,6 +850,7 @@ func TestPersist32C(t *testing.T) {
 // alive servers isn't enough to form a majority, perhaps start a new server.
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
+
 func TestFigure82C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)

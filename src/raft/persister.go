@@ -12,9 +12,12 @@ package raft
 import "sync"
 
 type Persister struct {
-	mu        sync.Mutex
+	mu sync.Mutex
+	// raftstate 是一些 raft 的 NonVolitile信息，比如说 term, votefor, logs
 	raftstate []byte
-	snapshot  []byte
+
+	// snapshot 快照相关
+	snapshot []byte
 }
 
 func MakePersister() *Persister {
