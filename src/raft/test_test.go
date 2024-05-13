@@ -978,6 +978,8 @@ func TestFigure8Unreliable2C(t *testing.T) {
 				nup += 1
 			}
 		}
+
+		//cfg.checkOneLeader()
 	}
 
 	for i := 0; i < servers; i++ {
@@ -985,6 +987,9 @@ func TestFigure8Unreliable2C(t *testing.T) {
 			cfg.connect(i)
 		}
 	}
+
+	// fmt.Printf("\n\n\n")
+	cfg.checkOneLeader()
 
 	cfg.one(rand.Int()%10000, servers, true)
 

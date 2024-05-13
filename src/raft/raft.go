@@ -214,7 +214,7 @@ func (rf *Raft) eventLoop() {
 }
 
 func (rf *Raft) applyEntries() {
-	for rf.killed() == false {
+	for {
 		// 不断读取已提交的日志条目，把命令写进 channel
 		rf.mu.Lock()
 		lastApplied := rf.lastApplied
@@ -413,6 +413,8 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 			reply := AppendEntryReply{}
 			reply.Success = false
 
+			// fmt.Printf("sendAppendEntries: LeaderId %d to %d, PrevLogIndex %d, len of entries %d\n", rf.me, i, prevLogIndex, len(entries))
+
 			// 为什么这两行代码调换一下位置就不行 ???? 答案是不行 !!!
 			rf.mu.Unlock()
 			// 这应该是一个长调用(时间开销大),如果调换了位置获取锁的时间就会很长
@@ -502,7 +504,14 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 
 					rf.mu.Lock()
 					// 下次当选时能够避免从 len(rf.Log)处开始进行一致性检查
-					rf.nextIndex[i] = nextIndex - 1
+					// rf.nextIndex[i] = nextIndex - 1
+					// 利用 ConflictFirstIndex 和 ConflictTerm 进行加速
+					// nextIndex := rf.getNextIndex(reply, nextIndex)
+					// follower ConflictFirstIndex 往后的日志都是错误的
+					nextIndex := reply.ConflictFirstIndex
+
+					rf.nextIndex[i] = nextIndex
+
 					rf.mu.Unlock()
 
 					goto retry
@@ -511,6 +520,56 @@ func (rf *Raft) broadcastAppendEntries(index int, term int, nAgree int, commitIn
 		}(i, rf)
 	}
 	wg.Wait()
+}
+
+func (rf *Raft) getNextIndex(reply AppendEntryReply, nextIndex int) int {
+	// 这里递减nextIndex使用了论文中提到的优化策略：
+	// If desired, the protocol can be optimized to reduce the number of rejected AppendEntries
+	// RPCs. For example,  when rejecting an AppendEntries request, the follower can include the
+	// term of the conflicting entry and the first index it stores for that term. With this
+	// information, the leader can decrement nextIndex to bypass all of the conflicting entries
+	// in that term; one AppendEntries RPC will be required for each term with conflicting entries,
+	// rather than one RPC per entry.
+
+	// reply's conflictTerm=0，表示None。说明peer:i的log长度小于nextIndex。
+	if reply.ConflictTerm == -1 {
+		// If it does not find an entry with that term, it should set nextIndex = conflictIndex
+		nextIndex = reply.ConflictFirstIndex
+	} else {
+		// peer:i的prevLogIndex处的任期与leader不等
+		// leader搜索它的log确认是否存在等于该任期的entry
+		conflictIndex := reply.ConflictFirstIndex
+		conflictTerm := rf.Log[conflictIndex].Term
+		// 只有conflictTerm大于或等于reply's conflictTerm，才有可能或一定找得到任期相等的entry
+		if conflictTerm >= reply.ConflictTerm {
+			// 从reply.ConflictFirstIndex处开始向搜索，寻找任期相等的entry
+			for i := conflictIndex; i > 0; i-- {
+				if rf.Log[i].Term == reply.ConflictTerm {
+					break
+				}
+				conflictIndex -= 1
+			}
+			// conflictIndex不为0，leader的log中存在同任期的entry
+			if conflictIndex != 0 {
+				// 向后搜索，使得conflictIndex为最后一个任期等于reply.ConflictTerm的entry
+				for i := conflictIndex + 1; i < nextIndex; i++ {
+					if rf.Log[i].Term != reply.ConflictTerm {
+						break
+					}
+					conflictIndex += 1
+				}
+				nextIndex = conflictIndex + 1
+			} else { // conflictIndex等于0，说明不存在同任期的entry
+				nextIndex = reply.ConflictFirstIndex
+			}
+		} else {
+			// conflictTerm < reply.ConflictTerm，并且必须往前搜索，所以一定找不到任期相等的entry
+			// conflictTerm < reply.ConflictTerm,说明 follower 这段日志全部无效
+			nextIndex = reply.ConflictFirstIndex
+		}
+
+	}
+	return nextIndex
 }
 
 // save Raft's persistent state to stable storage,
@@ -619,6 +678,10 @@ type AppendEntryArgs struct {
 type AppendEntryReply struct {
 	Term    int  // currentTerm, for leader to update itself
 	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+
+	// 加速 backtracking 的过程
+	ConflictTerm       int
+	ConflictFirstIndex int
 }
 
 // example RequestVote RPC handler.
@@ -646,7 +709,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		reply.Term = rf.CurrentTerm
 
-		if rf.VoteFor == -1 {
+		if rf.VoteFor == -1 || rf.VoteFor == args.CandidateId {
 			// 关于日志复制还需要进行选举限制
 			// 收到投票请求的服务器 v 将比较谁的日志更完整
 			// 拒绝投票的条件：
@@ -718,15 +781,35 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 		// 这种情况下需要接受 Leader 发过来的 entries, 首先进行一致性检查
 		if len(rf.Log)-1 < args.PrevLogIndex {
 			reply.Success = false
+			reply.ConflictTerm = -1
+			reply.ConflictFirstIndex = len(rf.Log)
+
 			return
 		}
 		// 有这条日志记录
 		if rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
 			reply.Success = false
+
+			// 我们要利用 conflictIndex 和 conflictTerm 来加速这一回退的过程
+			reply.ConflictTerm = rf.Log[args.PrevLogIndex].Term
+			reply.ConflictFirstIndex = args.PrevLogIndex
+
+			for i := reply.ConflictFirstIndex - 1; i >= 0; i-- {
+				if rf.Log[i].Term != reply.ConflictTerm {
+					break
+				} else {
+					reply.ConflictFirstIndex -= 1
+				}
+			}
+
 			return
 		}
 
 		rf.switchTo(Follower)
+
+		rf.VoteFor = args.LeaderId
+
+		rf.persist()
 
 		// 一致性检查成功，改写日志,
 		// 也不一定哦 ！！！
@@ -980,9 +1063,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 	rf.mu.Unlock()
 
-	rf.mu.Lock()
-	rf.persist()
-	rf.mu.Unlock()
+	//rf.mu.Lock()
+	//rf.persist()
+	//rf.mu.Unlock()
 
 	go rf.eventLoop()
 

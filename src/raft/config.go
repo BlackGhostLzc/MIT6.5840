@@ -570,6 +570,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
 				if ok {
+					// fmt.Printf("%d is the leader\n\n", rf.me)
 					index = index1
 					break
 				}
@@ -579,9 +580,11 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
+			// fmt.Printf("index is not -1\n\n")
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
+				// fmt.Printf("nd is %d, cmd1 is %v, cmd is %v\n\n", nd, cmd1, cmd)
 				if nd > 0 && nd >= expectedServers {
 					// fmt.Printf("cmd1 is %v....cmd is %v\n\n", cmd1, cmd)
 					// committed
